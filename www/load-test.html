@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebSocket нагрузка</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10131a; color: #edf2f7; }
+    body { max-width: 680px; margin: 0 auto; padding: 32px 20px; }
+    section { background: #191e29; border: 1px solid #2b3447; border-radius: 14px; padding: 20px; margin-top: 18px; }
+    h1 { margin: 0; font-size: 1.6rem; }
+    p, label { color: #aeb9cc; }
+    input, button { border: 0; border-radius: 8px; padding: 10px 12px; font: inherit; }
+    input { width: 100px; color: #edf2f7; background: #283246; }
+    button { cursor: pointer; font-weight: 700; margin-left: 8px; }
+    #start { color: #08120d; background: #42d392; }
+    #stop { color: #fff; background: #c94955; }
+    .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .stat { padding: 14px; border-radius: 10px; background: #232b3a; }
+    .number { display: block; margin-top: 4px; color: #fff; font-size: 1.6rem; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Нагрузка WebSocket-клиентами</h1>
+  <p>Подключается к <code id="url"></code>. Начните с 10–100 клиентов.</p>
+
+  <section>
+    <label for="count">Число клиентов:</label>
+    <input id="count" type="number" min="1" max="1000" value="100">
+    <button id="start">Создать подключения</button>
+    <button id="stop">Закрыть все</button>
+  </section>
+
+  <section class="stats">
+    <div class="stat">Запрошено <span id="requested" class="number">0</span></div>
+    <div class="stat">Подключено <span id="opened" class="number">0</span></div>
+    <div class="stat">Ошибок <span id="errors" class="number">0</span></div>
+    <div class="stat">Закрыто <span id="closed" class="number">0</span></div>
+  </section>
+
+  <script>
+    const url = `ws://${location.hostname || "127.0.0.1"}:8080`;
+    const sockets = [];
+    const stats = { requested: 0, opened: 0, errors: 0, closed: 0 };
+
+    document.querySelector("#url").textContent = url;
+
+    function render() {
+      for (const [name, value] of Object.entries(stats)) {
+        document.querySelector(`#${name}`).textContent = value;
+      }
+    }
+
+    document.querySelector("#start").addEventListener("click", () => {
+      const count = Number(document.querySelector("#count").value);
+      if (!Number.isInteger(count) || count < 1 || count > 1000) {
+        return;
+      }
+
+      stats.requested += count;
+      render();
+
+      for (let index = 0; index < count; ++index) {
+        const socket = new WebSocket(url);
+        sockets.push(socket);
+
+        socket.onopen = () => {
+          stats.opened += 1;
+          render();
+        };
+        socket.onerror = () => {
+          stats.errors += 1;
+          render();
+        };
+        socket.onclose = () => {
+          stats.closed += 1;
+          render();
+        };
+      }
+    });
+
+    document.querySelector("#stop").addEventListener("click", () => {
+      for (const socket of sockets) {
+        if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
+          socket.close();
+        }
+      }
+    });
+  </script>
+</body>
+</html>

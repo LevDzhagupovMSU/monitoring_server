@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Мониторинг системы</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, system-ui, sans-serif;
+      background: #10131a;
+      color: #edf2f7;
+    }
+
+    body {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 32px 20px;
+    }
+
+    header, .connection, .card {
+      background: #191e29;
+      border: 1px solid #2b3447;
+      border-radius: 14px;
+    }
+
+    header {
+      padding: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    h1 { margin: 0; font-size: 1.6rem; }
+    p { color: #aeb9cc; }
+
+    .connection {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0;
+      padding: 14px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #f05f67;
+    }
+
+    .dot.connected { background: #42d392; }
+
+    button {
+      margin-left: auto;
+      padding: 9px 14px;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+      color: #08120d;
+      background: #42d392;
+      font-weight: 700;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 16px;
+    }
+
+    .card { padding: 20px; }
+    .label { color: #aeb9cc; font-size: .9rem; }
+    .value { margin-top: 8px; font-size: 2rem; font-weight: 700; }
+    .chart-card { margin-top: 16px; padding: 20px; }
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; color: #aeb9cc; font-size: .85rem; }
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 5px;
+      border-radius: 50%;
+      background: var(--color);
+    }
+    .chart-wrap { position: relative; height: 280px; margin-top: 16px; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #updated { margin-top: 22px; font-size: .9rem; }
+
+    @media (max-width: 620px) {
+      .chart-header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Мониторинг системы</h1>
+      <p>Данные поступают через WebSocket.</p>
+    </div>
+  </header>
+
+  <section class="connection">
+    <span id="status-dot" class="dot"></span>
+    <span id="status">Отключено</span>
+    <button id="connect">Подключиться</button>
+  </section>
+
+  <main class="metrics">
+    <section class="card"><div class="label">CPU</div><div id="cpu" class="value">—</div></section>
+    <section class="card"><div class="label">GPU</div><div id="gpu" class="value">—</div></section>
+    <section class="card"><div class="label">Память</div><div id="memory" class="value">—</div></section>
+  </main>
+
+  <section class="card chart-card">
+    <div class="chart-header">
+      <div class="label">Нагрузка за последние 60 секунд</div>
+      <div class="legend">
+        <span style="--color: #42d392">CPU</span>
+        <span style="--color: #68a7ff">GPU</span>
+        <span style="--color: #f5bd5c">Память</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="metrics-chart" aria-label="График нагрузки CPU, GPU и памяти"></canvas>
+    </div>
+  </section>
+
+  <p id="updated">Данные ещё не получены.</p>
+
+  <script>
+    const port = 8080;
+    const url = `ws://${location.hostname || "127.0.0.1"}:${port}`;
+    let socket;
+
+    const status = document.querySelector("#status");
+    const dot = document.querySelector("#status-dot");
+    const button = document.querySelector("#connect");
+    const chart = document.querySelector("#metrics-chart");
+    const chartContext = chart.getContext("2d");
+    const history = [];
+    const maxPoints = 60;
+
+    function drawChart() {
+      const bounds = chart.getBoundingClientRect();
+      const pixelRatio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(bounds.width * pixelRatio));
+      const height = Math.max(1, Math.round(bounds.height * pixelRatio));
+      if (chart.width !== width || chart.height !== height) {
+        chart.width = width;
+        chart.height = height;
+      }
+
+      chartContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      chartContext.clearRect(0, 0, bounds.width, bounds.height);
+
+      const padding = { top: 12, right: 12, bottom: 28, left: 34 };
+      const plotWidth = bounds.width - padding.left - padding.right;
+      const plotHeight = bounds.height - padding.top - padding.bottom;
+      const x = index => padding.left + (index / Math.max(1, maxPoints - 1)) * plotWidth;
+      const y = value => padding.top + (1 - value / 100) * plotHeight;
+
+      chartContext.font = "12px system-ui, sans-serif";
+      chartContext.textAlign = "right";
+      chartContext.textBaseline = "middle";
+      chartContext.strokeStyle = "#2b3447";
+      chartContext.fillStyle = "#aeb9cc";
+      chartContext.lineWidth = 1;
+
+      for (const level of [0, 25, 50, 75, 100]) {
+        const lineY = y(level);
+        chartContext.beginPath();
+        chartContext.moveTo(padding.left, lineY);
+        chartContext.lineTo(bounds.width - padding.right, lineY);
+        chartContext.stroke();
+        chartContext.fillText(`${level}%`, padding.left - 8, lineY);
+      }
+
+      const series = [
+        { color: "#42d392", value: point => point.cpu },
+        { color: "#68a7ff", value: point => point.gpu },
+        { color: "#f5bd5c", value: point => point.memory }
+      ];
+
+      for (const item of series) {
+        if (history.length === 0) {
+          continue;
+        }
+
+        chartContext.beginPath();
+        history.forEach((point, index) => {
+          const pointX = x(index * (maxPoints - 1) / Math.max(1, history.length - 1));
+          const pointY = y(item.value(point));
+          if (index === 0) {
+            chartContext.moveTo(pointX, pointY);
+          } else {
+            chartContext.lineTo(pointX, pointY);
+          }
+        });
+        chartContext.strokeStyle = item.color;
+        chartContext.lineWidth = 2;
+        chartContext.stroke();
+      }
+    }
+
+    window.addEventListener("resize", drawChart);
+    drawChart();
+
+    function setStatus(text, connected) {
+      status.textContent = text;
+      dot.classList.toggle("connected", connected);
+      button.textContent = connected ? "Отключиться" : "Подключиться";
+    }
+
+    function connect() {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close();
+        return;
+      }
+
+      setStatus(`Подключение к ${url}…`, false);
+      socket = new WebSocket(url);
+
+      socket.onopen = () => setStatus("Подключено", true);
+      socket.onclose = () => setStatus("Отключено", false);
+      socket.onerror = () => setStatus("Ошибка подключения", false);
+
+      function formatPercent(value) {
+        return Number.isFinite(value) ? `${value.toFixed(1)}%` : "—";
+      }
+
+      socket.onmessage = ({ data }) => {
+        try {
+          const metrics = JSON.parse(data);
+          if (metrics.type !== "metric" || metrics.version !== 1) {
+            throw new Error("Неподдерживаемый формат сообщения");
+          }
+
+          const { cpu, gpu, memory } = metrics.data;
+          document.querySelector("#cpu").textContent = formatPercent(cpu.total_percent);
+          document.querySelector("#gpu").textContent = formatPercent(gpu.total_percent);
+          document.querySelector("#memory").textContent =
+            `${Number.isFinite(memory.used_mb) ? memory.used_mb : "—"} МБ (${formatPercent(memory.percent)})`;
+          history.push({
+            cpu: Math.max(0, Math.min(100, Number(cpu.total_percent) || 0)),
+            gpu: Math.max(0, Math.min(100, Number(gpu.total_percent) || 0)),
+            memory: Math.max(0, Math.min(100, Number(memory.percent) || 0))
+          });
+          if (history.length > maxPoints) {
+            history.shift();
+          }
+          drawChart();
+          document.querySelector("#updated").textContent =
+            `Обновлено: ${new Date(metrics.timestamp_ms).toLocaleTimeString()}`;
+        } catch (error) {
+          console.error("Не удалось прочитать метрики:", error);
+        }
+      };
+    }
+
+    button.addEventListener("click", connect);
+    connect();
+  </script>
+</body>
+</html>
