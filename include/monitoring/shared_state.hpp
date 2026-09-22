@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@ class Session;
 // Реестр подключённых сессий и единая точка рассылки данных.
 class SharedState {
     std::set<std::weak_ptr<Session>, std::owner_less<std::weak_ptr<Session>>> sessions_;
+    std::mutex mutex_;
 public:
     void join(const std::shared_ptr<Session>& session);
     void leave(const Session& session);

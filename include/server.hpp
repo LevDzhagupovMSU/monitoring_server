@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "session.hpp"
 #include "monitoring/session_handler.hpp"
@@ -30,7 +31,7 @@ class Server{
     MetricsService metric_service_;
     SessionHandler ec_handler_;
 
-    std::thread server_th;
+    std::vector<std::thread> server_th;
 
     void start_accept();
 

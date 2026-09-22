@@ -3,6 +3,9 @@
 #include "monitoring/session_handler.hpp"
 
 #include <boost/asio/bind_executor.hpp>
+#include <boost/asio/dispatch.hpp>
+#include <iostream>
+#include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/beast/core/error.hpp>
@@ -11,6 +14,7 @@
 #include <boost/beast/websocket/stream_base.hpp>
 
 #include <iostream>
+#include <thread>
 #include <utility>
 
 
@@ -65,59 +69,74 @@ void monitoring::Session::read(){
 }
 
 void monitoring::Session::send(std::shared_ptr<const std::string> message){
-    if(!started_)
-        return;
-
-    bool on_sending = !messages_deque_.empty();
-
-    messages_deque_.push_back(std::move(message));
-    if(messages_deque_.size() == 3){
-        std::swap(messages_deque_[1], messages_deque_[2]);
-        messages_deque_.pop_back();
-        std::cerr << "Warning: message queue is full, dropping the oldest message" << std::endl;
-    }
-
-    if(!on_sending){
-        send_next();
-    }
-}
-
-void monitoring::Session::send_next(){
-    auto cur_message = messages_deque_.front();
-    w_socket_.async_write(boost::asio::buffer(*cur_message),[self = shared_from_this()](const boost::beast::error_code& ec, size_t){
-        if(ec){
-            self->ec_handler.on_event(self, {monitoring::SessionEventType::write_error, ec});
-
+    boost::asio::post(strand_, [message, self = shared_from_this()](){
+        if(!self->started_)
             return;
+
+        bool on_sending = !self->messages_deque_.empty();
+        
+        self->messages_deque_.push_back(std::move(message));
+        if(self->messages_deque_.size() == 3){
+            std::swap(self->messages_deque_[1], self->messages_deque_[2]);
+            self->messages_deque_.pop_back();
+            std::cerr << "Warning: message queue is full, dropping the oldest message" << std::endl;
         }
-        self->messages_deque_.pop_front();
-        if(!self->messages_deque_.empty()){
+
+        if(!on_sending)
             self->send_next();
-        }
     });
 }
 
-void monitoring::Session::fail(const boost::beast::error_code& ec){
-    if(!started_.exchange(false))
-        return;
+void monitoring::Session::send_next(){
+    boost::asio::dispatch(strand_, [self = shared_from_this()](){
+        auto cur_message = self->messages_deque_.front();
 
-    boost::beast::error_code ignored;
-    boost::beast::get_lowest_layer(w_socket_).socket().close(ignored);
+        self->w_socket_.async_write(boost::asio::buffer(*cur_message),
+                              boost::asio::bind_executor(self->strand_, [self, cur_message](const boost::beast::error_code& ec, size_t){
+            if(ec){
+                self->ec_handler.on_event(self, {monitoring::SessionEventType::write_error, ec});
 
-    on_disconnect_(*this, ec);
+                return;
+            }
+
+            self->messages_deque_.pop_front();
+            if(!self->messages_deque_.empty()){
+                self->send_next();
+            }
+        }));
+    });
+}
+
+void monitoring::Session::abort_handshake(){
+    boost::asio::dispatch(
+        strand_,
+        [self = shared_from_this()] {
+            if (self->started_) {
+                return;
+            }
+
+            boost::beast::error_code ec;
+            boost::beast::get_lowest_layer(
+                self->w_socket_).socket().close(ec);
+
+            self->on_disconnect_(*self, ec);
+        });
 }
 
 void monitoring::Session::stop(){
-    if(!started_.exchange(false))
-        return;
+    boost::asio::post(strand_, [self = shared_from_this()](){
+        if(!self->started_.exchange(false))
+            return;
 
-    on_disconnect_(*this, {});
-    
-    boost::beast::error_code ec;
-    w_socket_.close({boost::beast::websocket::close_code::normal, "Shutting down"}, ec);
-    if(ec){
-        ec_handler.on_event(shared_from_this(), {monitoring::SessionEventType::close_error, ec});
-    }
+        self->on_disconnect_(*self, {});
+
+        self->w_socket_.async_close({boost::beast::websocket::close_code::normal, "Shutting down"},
+            boost::asio::bind_executor(self->strand_, [self](const boost::beast::error_code& ec){
+                if(ec && ec != boost::asio::error::operation_aborted)
+                    self->ec_handler.on_event(self,
+                                {monitoring::SessionEventType::close_error,ec});
+            }));
+    });
 }
 
 

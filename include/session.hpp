@@ -35,7 +35,6 @@ private:
     monitoring::SessionHandler& ec_handler;
 
     void read();
-    void fail(const boost::beast::error_code& ec);
     void send_next();
 public:
     Session(boost::asio::io_context& io, 
@@ -47,7 +46,9 @@ public:
 
     void do_handshake(HandshakeHandler on_complete);
     void send(std::shared_ptr<const std::string> message);
+
     void start();
+    void abort_handshake(); // закрыть сессию которая не начала работу
     void stop();
 
     Session(const Session&) = delete;

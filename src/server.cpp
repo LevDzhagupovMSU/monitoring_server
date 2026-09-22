@@ -2,35 +2,42 @@
 #include <boost/beast/core/error.hpp>
 #include <iostream>
 #include <memory>
-#include <thread>
 #include <utility>
 
 #include "server.hpp"
 #include "monitoring/session_event.hpp"
 #include "session.hpp"
 
+#define NUM_TH 4
+
 
 void monitoring::Server::start(){
-    if(running_){
-        std::cout << "WARNING: Server already started" << std::endl;
+    bool expected = false;
+
+    if (!running_.compare_exchange_strong(expected, true)) {
+        std::cout << "WARNING: Server already started\n";
         return;
     }
 
-    running_ = true;
     start_accept();
     metric_service_.start();
 
-    server_th = std::thread([this](){
-        io_.run();
-    });
+    server_th.reserve(NUM_TH);
+    for(int i = 0; i < NUM_TH; ++i){
+        server_th.emplace_back([this](){
+            io_.run();
+        });
+    }
 }
 
 monitoring::Server::~Server(){
     stop();
 }
 
-void monitoring::Server::stop(){
-    if(!running_.exchange(false)){
+void monitoring::Server::stop() {
+    bool expected = true;
+
+    if (!running_.compare_exchange_strong(expected, false)) {
         return;
     }
 
@@ -39,15 +46,18 @@ void monitoring::Server::stop(){
     metric_service_.stop();
 
     auto sessions = session_.detach_all();
-    for(auto& session : sessions){
+
+    for (auto& session : sessions) {
         session->stop();
     }
 
-    io_.stop();
-
-    if(server_th.joinable()){
-        server_th.join();
+    for (auto& thread : server_th) {
+        if (thread.joinable()) {
+            thread.join();
+        }
     }
+
+    server_th.clear();
 }
 
 void monitoring::Server::start_accept(){
@@ -77,9 +87,15 @@ void monitoring::Server::create_session(boost::asio::io_context& io, boost::asio
 
     }, ec_handler_);
 
+    session_.join(session);
     session->do_handshake([this, session](const boost::beast::error_code& ec){
         if(!ec){
-            session_.join(session);
+
+            if(!running_){
+                session->abort_handshake();
+
+                return;
+            }
             session->start();
             
             std::cout << "New client connected"<< std::endl;

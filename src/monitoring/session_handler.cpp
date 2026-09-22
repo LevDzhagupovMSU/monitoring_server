@@ -9,18 +9,19 @@ void monitoring::SessionHandler::on_event(std::shared_ptr<Session> session, cons
     switch (event.type) {
         case monitoring::SessionEventType::handshake_error:
             std::cerr << event.ec.what() << std::endl;
+            session->abort_handshake();
             break;
         case monitoring::SessionEventType::disconnected:
             std::cerr << event.ec.what() << std::endl;
-            session->fail(event.ec);
+            session->stop();
             break;
         case monitoring::SessionEventType::write_error:
             std::cerr << event.ec.what() << std::endl;
-            session->fail(event.ec);
+            session->stop();
             break;
         case monitoring::SessionEventType::read_error:
             std::cerr << event.ec.what() << std::endl;
-            session->fail(event.ec);
+            session->stop();
             break;
         case monitoring::SessionEventType::close_error:
             std::cerr << event.ec.what() << std::endl;
